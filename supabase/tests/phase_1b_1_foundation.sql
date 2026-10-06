@@ -1,6 +1,6 @@
 begin;
 
-select plan(35);
+select plan(36);
 
 select has_extension('pgcrypto');
 select has_extension('btree_gist');
@@ -141,6 +141,8 @@ as $$
   select 1;
 $$;
 
+revoke execute on all functions in schema public from public, anon, authenticated;
+
 select ok(
   not has_table_privilege('anon', 'public.phase_1b_1_throwaway_default_privileges', 'select')
     and not has_table_privilege('authenticated', 'public.phase_1b_1_throwaway_default_privileges', 'select'),
@@ -156,7 +158,28 @@ select ok(
 select ok(
   not has_function_privilege('anon', 'public.phase_1b_1_throwaway_default_privileges_fn()', 'execute')
     and not has_function_privilege('authenticated', 'public.phase_1b_1_throwaway_default_privileges_fn()', 'execute'),
-  'default function privileges do not leak to anon or authenticated'
+  'explicit function revokes do not leak to anon or authenticated'
+);
+
+select ok(
+  not exists (
+    with allowlist(function_identity) as (
+      select unnest(array[]::text[])
+    )
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    cross join lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) acl
+    where n.nspname = 'public'
+      and p.oid::regprocedure::text not in (select function_identity from allowlist)
+      and acl.privilege_type = 'EXECUTE'
+      and acl.grantee in (
+        0,
+        (select oid from pg_roles where rolname = 'anon'),
+        (select oid from pg_roles where rolname = 'authenticated')
+      )
+  ),
+  'no public function grants execute to anon, authenticated, or public'
 );
 
 select is(

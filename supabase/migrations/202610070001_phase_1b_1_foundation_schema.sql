@@ -45,36 +45,6 @@ begin
   execute 'alter default privileges in schema public revoke execute on functions from public';
 end $$;
 
-create function public.revoke_public_function_execute_on_create()
-returns event_trigger
-language plpgsql
-security definer
-set search_path = public, pg_temp
-as $$
-declare
-  created_object record;
-begin
-  for created_object in
-    select *
-    from pg_event_trigger_ddl_commands()
-    where schema_name = 'public'
-      and object_type = 'function'
-  loop
-    execute format(
-      'revoke execute on function %s from public, anon, authenticated',
-      created_object.object_identity
-    );
-  end loop;
-end;
-$$;
-
-revoke all on function public.revoke_public_function_execute_on_create() from public, anon, authenticated;
-
-create event trigger revoke_public_function_execute_on_create
-  on ddl_command_end
-  when tag in ('CREATE FUNCTION')
-  execute function public.revoke_public_function_execute_on_create();
-
 create type public.club_status as enum ('active', 'suspended', 'archived');
 create type public.member_status as enum ('active', 'inactive', 'suspended', 'left');
 create type public.staff_status as enum ('temp_password_pending', 'active', 'suspended', 'removed');

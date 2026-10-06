@@ -75,43 +75,10 @@ All database changes go through **Supabase migrations** in the repo. Never edit 
 - The Supabase **service role key** is used only in server code that truly needs it, never imported in any client bundle, never prefixed `NEXT_PUBLIC_`. Add a lint rule or test that fails the build if it leaks into client code.
 - Seed and demo data must be fictional. Never use real people's data.
 
+
 ## 4. Domain decisions (already made, follow them)
 
-**Identity and tenancy**
-
-- One global account per person (`profiles`, linked to `auth.users`). Membership in a club is a separate record (`club_members`). A person can have many memberships.
-- The **active club** is chosen by the user and stored server-side or in a signed cookie, then **re-validated against the database on every request**. Never trust a `club_id` coming from the client without checking membership.
-- Every tenant table has a `club_id` column and Row Level Security. Tenant isolation is enforced **in the database**, not only in application code.
-
-**Roles**
-
-- `super_admin` (platform), `owner`, `staff` with granular permissions, `member`.
-- Do NOT hard-code role checks all over the code. Use `roles`, `permissions`, and a single permission-check function in SQL and a matching helper in TypeScript. Example permissions: `members.read`, `members.write`, `subscriptions.manage`, `payments.record`, `payments.approve`, `plans.manage`, `attendance.scan`, `club.settings`.
-- A user must never be able to change their own role or permissions.
-
-**Member-owned data**
-
-- Workout logs and body measurements belong to the **member's profile**, and every record carries the `club_id` where it was created.
-- A club can read member-owned data **only while that member has an active membership in that club**, and only the records created under that `club_id`. When membership ends, club access closes; the member keeps their own history.
-- Training plans, nutrition plans, plan templates, exercise library entries, packages and branding belong to the **club**.
-
-**Payments**
-
-- Cash is recorded manually by staff. Online-wallet / InstaPay-style transfers use a **proof-of-payment flow**: the member uploads a screenshot and reference number, staff reviews and approves or rejects, and approval activates or extends the subscription.
-- `payments` has `method`, `status` (`pending`, `approved`, `rejected`, `refunded`), `amount`, `currency`, `reference`, `proof_path`, `reviewed_by`, `reviewed_at`. A payment gateway with webhooks will be added later without changing this table's meaning.
-- Money is stored as integer minor units (piasters). Never floats.
-- Approving a payment must be **idempotent** and **transactional** (one database function), so double clicks or retries cannot create two subscriptions.
-
-**Digital card and QR**
-
-- The QR contains a **server-signed, short-lived token** (use `jose`, signed with a server-only secret, include `kid` to allow rotation). Claims: membership id, club id, `iat`, `exp` (about 45 seconds, UI refreshes every 30), random `jti`.
-- The member app fetches a fresh token from an authenticated endpoint. Rate-limit it.
-- Staff scan from the PWA. Verification runs **on the server**: signature, expiry, staff belongs to the same club and has `attendance.scan`, membership is active and the subscription is valid. Response contains only what reception needs (name, photo, plan state). Record attendance with a dedupe window so one scan cannot create duplicates.
-- Offline: the member's card page opens offline (name, club, member number, last known status) but **does not show a QR without a connection**; show a clear message and the member number so reception can look the member up manually. Do not store signing secrets on the device.
-
-**Per-club settings**
-
-- Branding: name (ar/en), logo, one accent color. Feature flags for modules (gym module only now). Whether a profile photo is required for members.
+Binding domain decisions live in [docs/standards/domain-decisions.md](docs/standards/domain-decisions.md).
 
 ## 5. Quality and logic rules
 
@@ -139,65 +106,14 @@ All database changes go through **Supabase migrations** in the repo. Never edit 
 - Account deletion and data export exist and are tested.
 - Run `npm audit` and a secret scan in CI and report the output.
 
+
 ## 7. Visual identity and design system
 
-**Character:** strong, not aggressive; friendly and Egyptian in tone; fast and clear for one-handed use in a gym.
-
-**Do NOT produce generic AI-looking UI.** Forbidden: purple/blue gradients, glassmorphism and blurred blobs, default shadcn look left unstyled, Inter / Roboto / system-default fonts, cards nested inside cards, a rounded icon tile above every heading, centered hero-with-three-feature-cards layouts, emoji icons, stock gym photography, gray text on colored backgrounds, pure black or pure gray (always tint), bounce/elastic easing, decorative glow. Every screen must look designed for this product.
-
-**Look to build:** dark charcoal with a single lime accent, large rounded surfaces, big confident numerals, pill buttons, generous spacing, asymmetric layouts, and a weight-plate motif (a circle with an inner ring) used sparingly. The lime is the signature: **one primary lime action per screen**.
-
-**Design tokens** (put them in one place as CSS variables; dark is a first-class theme, not an afterthought; verify WCAG AA contrast in both themes and report any adjustment):
-
-| Token | Dark | Light |
-|---|---|---|
-| `--bg` | `#1d211f` | `#f4f5ee` |
-| `--surface` | `#2a2f2b` | `#ffffff` |
-| `--surface-2` | `#343a35` | `#eef0e6` |
-| `--text` | `#f1f4ea` | `#1a1d14` |
-| `--text-muted` | `#a3aa9a` | `#626858` |
-| `--accent` (fills only) | `#c6f432` | `#c6f432` |
-| `--on-accent` | `#1b2007` | `#1b2007` |
-| `--accent-text` (accent used as text) | `#c6f432` | a darker lime of your choice that passes AA on `--bg` |
-| `--danger`, `--warning`, `--success` | derive tinted values that pass AA | same |
-
-Lime is never used as small text on light backgrounds. Club color is shown only as the club logo tile and small indicators; the Dababa identity stays dominant.
-
-**Typography:** Cairo (Arabic and Latin) from Google Fonts via `next/font` (self-hosted at build), weights 400, 500, 800 only. Use **tabular numerals** for weights, reps, money and dates. Use Latin digits (0-9) in both languages. Define a type scale and stick to it.
-
-**Logo and wordmark:** weight-plate mark + "دبابة" (Arabic) with "Dababa" beneath, and the reverse in English. Provide SVG logo, a maskable PWA icon (192, 512), favicon and apple-touch-icon.
-
-**Digital card:** implement exactly like the approved mockup: Dababa brand on one side and the club logo tile and name on the other (club color on the tile only), member avatar, name and member number, a plan panel (plan name, active status chip, progress bar, end date, days left), a white QR panel (always dark-on-white for scanner reliability), and a 30-second countdown bar. It is the **first screen** the member sees on opening the installed app.
-
-**Layout rules**
-
-- Member app: mobile-first, bottom navigation (Card, Plan, Progress, Payments, More), safe-area aware, thumb-reachable controls, targets of at least 44px.
-- Club and Super Admin dashboards: desktop-first with a collapsible sidebar, dense tables with search, filter, sort and pagination, and a usable mobile fallback (stacked rows or horizontal scroll with sticky first column).
-- Every screen must be checked at 360px, 390px, 768px, 1024px and 1440px, in RTL and LTR, in light and dark, with long Arabic names and large text sizes. No horizontal page overflow, no clipped text, no overlapping.
-- Use **logical CSS properties** everywhere (`ms-`, `me-`, `ps-`, `pe-`, `start`, `end`, `inset-inline-*`). Never `left`/`right` for layout. Icons that imply direction (arrows, chevrons) flip in RTL.
-
-**Tone of copy**
-
-- Egyptian colloquial Arabic for motivation, empty states and friendly messages ("لسه مفيش تمرين النهاردة؟ يلا يا بطل").
-- Clear, simple Modern Standard Arabic for payments, subscriptions, privacy, errors and legal text. No jokes about money.
-- English copy carries the same personality; it is not a literal translation.
-- Sentence case, verb-first buttons, no "please", no "successfully", no exclamation marks in system messages.
-- All strings live in message files with stable keys. No hard-coded user-facing text in components.
+Binding visual identity, design tokens, layout, digital-card, and copy rules live in [docs/standards/design.md](docs/standards/design.md).
 
 ## 6a. Motion
 
-Use the `motion` package (`motion/react`) plus CSS where enough. Wrap the app in `MotionConfig reducedMotion="user"` and honor `prefers-reduced-motion` everywhere (replace movement with a simple fade or nothing).
-
-Use motion with purpose:
-
-- Route/page transitions and shared-element feel between list and detail.
-- Staggered entrance for lists and dashboard stats.
-- Card: subtle entrance, QR refresh transition, countdown bar.
-- Numbers: count-up for stats and personal records.
-- Progress ring/bar fill, set-complete check, bottom sheet and dialog enter/exit.
-- Button press feedback.
-
-Rules: animate `transform` and `opacity` only; 150 to 400 ms; ease-out curves; no bounce or elastic; no layout shift (CLS); directional animations must respect RTL (slide in from the correct side); lazy-load heavy animation code; never block interaction while animating; keep 60fps on a mid-range phone. Put durations and easings in shared tokens.
+Binding motion rules live in [docs/standards/motion.md](docs/standards/motion.md).
 
 ## 8. Testing rules
 
