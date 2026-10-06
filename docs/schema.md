@@ -1151,7 +1151,7 @@ Audit these actions:
 - role and permission changes.
 - member creation/import/deactivation.
 - subscription create/freeze/cancel/renew.
-- payment approve/reject/refund.
+- payment approve/reject/void/refund.
 - attendance manual override.
 - super admin viewing tenant data.
 - data export request/download.
@@ -1217,7 +1217,7 @@ Role templates and platform plans are both checked: the role controls what a sta
 
 Supabase's default email sender is not production-grade and should be used only for development/testing. Password reset and member verification still send email.
 
-Proposed free custom SMTP option before production: Brevo SMTP. As of the current official Brevo help/pricing pages, the free plan includes 300 email sends per day, and Supabase documents custom SMTP for Auth while noting its default SMTP is best-effort/non-production. Do not add Brevo or any SMTP service until the project owner explicitly approves the service, sender domain, DNS setup, and limits.
+Proposed free custom SMTP option before production: Brevo SMTP for password-reset and verification emails only. The verified limits and provider notes live in `docs/external-services.md`. Do not add Brevo or any SMTP service until the project owner explicitly approves the service, sender domain, DNS setup, and limits.
 
 ## Threat Model
 
@@ -1252,9 +1252,32 @@ Proposed free custom SMTP option before production: Brevo SMTP. As of the curren
 - Keep policy names explicit: `{table}_{operation}_{role_or_rule}`.
 - Add `updated_at` trigger helper once and reuse.
 - Add helper assertions in DB tests for cross-club deny cases.
-- Add pgTAP tests for platform plans: owner cannot change plan/prices/trial; staff cannot read other clubs' plans or snapshots; limits at `limit-1`, `limit`, and `limit+1`; downgrade below current usage; concurrent creation at limit; snapshot idempotency; member-count boundary dates; and price versioning preserving old periods.
-- Add pgTAP tests for temporary staff password lifecycle, forced password change, enumeration-resistant existing-email flow, privilege-escalation attempts, and session revocation markers.
-- Add tests proving every view is `security_invoker = true` and no default privileges leak to `anon` or `authenticated`.
+
+### Required pgTAP test matrix
+
+Phase 1B must include pgTAP tests for each decision below:
+
+| Decision | Required tests |
+|---|---|
+| Member phone | `require_member_phone` default true; E.164 accepts valid values and rejects invalid values; same phone can exist in different clubs; duplicate phone in the same club is rejected. |
+| Direct staff creation | temporary password fields are set for new email; temporary password is never stored in plain text and is shown once by server response only; first login requires password change; existing-email flow returns a neutral response and creates `staff_link_requests`; reset/suspend/remove set session revocation markers; self-role edit, non-owner owner edit, and granting permissions not held are rejected. |
+| Freeze policy | package freeze days/count limits are enforced; at-limit freeze succeeds; over-limit staff freeze fails; owner override requires `subscriptions.freeze.override`, reason, and audit row; freeze extends `subscriptions.ends_on` by exact Cairo calendar days. |
+| Cash payments | `record_cash_payment` immediately creates/extends a subscription; `amount_minor`, `currency`, `method`, `club_member_id`, and `membership_plan_id` cannot be changed; void/refund requires owner/accountant and reason; daily cash summary excludes voided/refunded rows and includes approved non-voided cash only. |
+| Platform admins | `profiles` has no platform-admin flag; `platform_admins` grants super-admin access only with MFA verified; revoked admin row loses access; tenant viewing is audited. |
+| Account deletion | deletion worker erases profile identity, photos, proof files, health/progress data, push subscriptions, and notifications; anonymizes retained accounting/audit references; retains required payment/subscription/accounting fields only. |
+| Member-owned active access | expired subscription with `club_members.status = 'active'` still allows permitted club staff read; `left` and `suspended` deny staff read; member self can still read own history after membership ends. |
+| Views | every view in `public` has `security_invoker = true`; no view leaks cross-club data through owner privileges. |
+| Default privileges | `anon` and `authenticated` have no default table, sequence, or function privileges; explicit grants exist only where intended. |
+| QR replay | duplicate `(club_id, qr_jti)` is rejected by the database; replay checks do not rely on in-memory state; duplicate scan window returns the chosen duplicate behavior without a second accepted attendance row. |
+| Subscription overlap and Cairo end date | overlapping pending/active/frozen subscriptions for one member are rejected by exclusion constraint; adjacent subscriptions are allowed; Cairo end-of-day validity is tested around midnight and timezone edges. |
+| Progress recording metadata | `workout_logs` and `body_measurements` require `recorded_by` and `source`; member-written rows set member source; staff-written rows set staff source and preserve member `profile_id`. |
+| Audit immutability and readers | direct UPDATE/DELETE on `audit_log` is revoked and trigger-blocked; owner/staff/super-admin reader scopes match the RLS table; ordinary members cannot read audit rows. |
+| Realtime | no `public` tables are present in Supabase Realtime publications unless a later migration explicitly lists approved tables and payloads. |
+| Platform plan data | `platform_plans`, versioned `platform_plan_prices`, `clubs` trial fields, and `club_plan_history` enforce owner-read/super-admin-write boundaries; price versioning preserves historical periods. |
+| Entitlements and locking | `club_entitlement` returns the documented contract; protected functions enforce staff/member/module limits in DB; concurrent creation at a staff limit allows only one transaction to pass. |
+| Downgrade behavior | downgrades never delete data or disable existing accounts; new additions above `max_staff`/`max_members` are blocked; disabled modules are read-only according to the module table. |
+| Usage snapshots | `usage_snapshots` are append-only/idempotent; active member count means `club_members.status = 'active'` plus at least one subscription valid on `snapshot_date`; a member in multiple clubs counts once per club. |
+| Cross-cutting RLS | every tenant table denies cross-club read/insert/update/delete; staff without the relevant permission cannot perform the action; users cannot escalate their own role or permissions. |
 
 ## Open Questions
 
