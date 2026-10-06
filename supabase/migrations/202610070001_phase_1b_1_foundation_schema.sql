@@ -29,11 +29,11 @@ begin
         creator_role
       );
       execute format(
-        'alter default privileges for role %I in schema public revoke all on functions from anon, authenticated',
+        'alter default privileges for role %I in schema public revoke execute on functions from anon, authenticated',
         creator_role
       );
       execute format(
-        'alter default privileges for role %I in schema public revoke all on functions from public',
+        'alter default privileges for role %I in schema public revoke execute on functions from public',
         creator_role
       );
     end if;
@@ -41,8 +41,8 @@ begin
 
   execute 'alter default privileges in schema public revoke all on tables from anon, authenticated';
   execute 'alter default privileges in schema public revoke all on sequences from anon, authenticated';
-  execute 'alter default privileges in schema public revoke all on functions from anon, authenticated';
-  execute 'alter default privileges in schema public revoke all on functions from public';
+  execute 'alter default privileges in schema public revoke execute on functions from anon, authenticated';
+  execute 'alter default privileges in schema public revoke execute on functions from public';
 end $$;
 
 create type public.club_status as enum ('active', 'suspended', 'archived');

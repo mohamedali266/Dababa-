@@ -141,21 +141,6 @@ as $$
   select 1;
 $$;
 
-select diag('pgTAP current_user=' || current_user);
-select diag(
-  'throwaway function acl='
-  || coalesce(
-    (
-      select p.proacl::text
-      from pg_proc p
-      join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public'
-        and p.proname = 'phase_1b_1_throwaway_default_privileges_fn'
-    ),
-    '<null>'
-  )
-);
-
 select ok(
   not has_table_privilege('anon', 'public.phase_1b_1_throwaway_default_privileges', 'select')
     and not has_table_privilege('authenticated', 'public.phase_1b_1_throwaway_default_privileges', 'select'),
