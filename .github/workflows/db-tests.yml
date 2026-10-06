@@ -27,7 +27,9 @@ jobs:
       - name: Start Supabase stack
         run: |
           set -o pipefail
-          supabase start 2>&1 | tee logs/supabase-start.log
+          supabase start 2>&1 \
+            | sed -E 's/sb_secret_[A-Za-z0-9_=.-]+/[redacted-secret-key]/g; s/sb_publishable_[A-Za-z0-9_=.-]+/[redacted-publishable-key]/g; s/(Publishable[[:space:]]+)[^[:space:]]+/\1[redacted]/g; s/(Secret[[:space:]]+)[^[:space:]]+/\1[redacted]/g; s/(service_role key[[:space:]]+)[^[:space:]]+/\1[redacted]/Ig; s/(anon key[[:space:]]+)[^[:space:]]+/\1[redacted]/Ig' \
+            | tee logs/supabase-start.log
 
       - name: Reset database
         run: |
@@ -91,6 +93,8 @@ jobs:
               if not path.exists():
                   continue
               tail = "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:])
+              tail = re.sub(r"sb_secret_[A-Za-z0-9_=.-]+", "[redacted-secret-key]", tail)
+              tail = re.sub(r"sb_publishable_[A-Za-z0-9_=.-]+", "[redacted-publishable-key]", tail)
               if tail:
                   print(f"::error title={escape_annotation(file_name)} tail::{escape_annotation(tail)}")
           PY
