@@ -11,14 +11,17 @@ This document proposes the database, RLS, permission, storage, audit, deletion/e
 - Money is stored as integer minor units.
 - Time values are stored as `timestamptz` in UTC and displayed in `Africa/Cairo`.
 - User-facing deletes are soft deletes where business history matters; account deletion is a separate hard-delete/export workflow.
+- Views must be created with `security_invoker = true`.
+- Migrations must revoke default privileges from `anon` and `authenticated` on tables, sequences, and functions, then grant explicitly.
+- Realtime stays disabled for now; no tables are published until a later phase explicitly opts in.
 
 ## Enums
 
 | Enum | Values |
 |---|---|
 | `club_status` | `active`, `suspended`, `archived` |
-| `member_status` | `active`, `inactive`, `suspended`, `ended` |
-| `staff_status` | `invited`, `active`, `inactive` |
+| `member_status` | `active`, `inactive`, `suspended`, `left` |
+| `staff_status` | `temp_password_pending`, `active`, `suspended`, `removed` |
 | `subscription_status` | `pending`, `active`, `frozen`, `expired`, `cancelled` |
 | `payment_method` | `cash`, `wallet_transfer`, `instapay_transfer`, `bank_transfer`, `manual_adjustment` |
 | `payment_status` | `pending`, `approved`, `rejected`, `refunded` |
@@ -28,6 +31,7 @@ This document proposes the database, RLS, permission, storage, audit, deletion/e
 | `notification_channel` | `in_app`, `web_push` |
 | `notification_status` | `queued`, `sent`, `read`, `failed` |
 | `audit_severity` | `info`, `warning`, `critical` |
+| `record_source` | `member`, `staff` |
 
 ## Extensions
 
@@ -46,21 +50,81 @@ Global account profile linked to Supabase Auth.
 |---|---|---|
 | `id` | `uuid` | PK, references `auth.users(id)` on delete cascade |
 | `email` | `citext` | nullable, unique where not null |
-| `phone` | `text` | nullable, unique where not null |
+| `phone_e164` | `text` | nullable, normalized E.164 for contact only, not unique platform-wide |
 | `full_name_ar` | `text` | not null |
 | `full_name_en` | `text` | nullable |
 | `avatar_path` | `text` | nullable |
 | `preferred_locale` | `text` | not null default `ar`, check in `('ar','en')` |
 | `timezone` | `text` | not null default `Africa/Cairo` |
-| `is_platform_admin` | `boolean` | not null default false |
 | `deleted_at` | `timestamptz` | nullable |
 | `created_at` | `timestamptz` | not null default `now()` |
 | `updated_at` | `timestamptz` | not null default `now()` |
 
 Indexes:
 - unique lower email where `email is not null`.
-- unique normalized phone where `phone is not null`.
 - `profiles_deleted_at_idx`.
+
+Tenant scoped: no.
+
+### `platform_admins`
+
+Separate platform administrator registry. Platform admin status is not stored on `profiles`.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `profile_id` | `uuid` | PK, references `profiles(id)` on delete cascade |
+| `granted_by` | `uuid` | nullable references `profiles(id)` |
+| `mfa_required` | `boolean` | not null default true |
+| `created_at` | `timestamptz` | not null default `now()` |
+| `revoked_at` | `timestamptz` | nullable |
+
+Rules:
+- Writable only by migrations or a protected super-admin function.
+- Super admin access requires a live platform admin row and MFA verified in the current session.
+- All super admin tenant reads are audited.
+
+Tenant scoped: no.
+
+### `platform_plans`
+
+Dababa platform plans for clubs. These are not member packages; member packages remain `membership_plans`.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | `uuid` | PK default `gen_random_uuid()` |
+| `code` | `text` | not null unique |
+| `name_ar` | `text` | not null |
+| `name_en` | `text` | not null |
+| `max_staff` | `integer` | nullable means unlimited, check `> 0` when not null |
+| `max_members` | `integer` | nullable means unlimited, check `> 0` when not null |
+| `min_monthly_fee_minor` | `integer` | not null default 0, check `>= 0` |
+| `allowed_modules` | `text[]` | not null, constrained to `core`, `nutrition`, `notifications`, `csv_import`, `attendance_scanner` |
+| `is_active` | `boolean` | not null default true |
+| `created_at` | `timestamptz` | not null default `now()` |
+| `updated_at` | `timestamptz` | not null default `now()` |
+
+Seed:
+- One default plan allows all currently available modules, with unlimited limits unless the project owner approves stricter launch limits.
+
+Tenant scoped: no.
+
+### `platform_plan_prices`
+
+Versioned per-active-member prices for future billing. Nothing bills in current scope.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | `uuid` | PK default `gen_random_uuid()` |
+| `platform_plan_id` | `uuid` | not null references `platform_plans(id)` |
+| `price_per_active_member_minor` | `integer` | not null check `>= 0` |
+| `currency` | `char(3)` | not null default `EGP` |
+| `effective_from` | `date` | not null |
+| `created_by` | `uuid` | not null references `profiles(id)` |
+| `created_at` | `timestamptz` | not null default `now()` |
+
+Constraints:
+- unique `(platform_plan_id, effective_from)`.
+- price changes never mutate prior rows.
 
 Tenant scoped: no.
 
@@ -73,6 +137,9 @@ Top-level tenant.
 | `id` | `uuid` | PK default `gen_random_uuid()` |
 | `slug` | `text` | not null unique, lowercase slug check |
 | `status` | `club_status` | not null default `active` |
+| `platform_plan_id` | `uuid` | not null references `platform_plans(id)` |
+| `trial_started_at` | `timestamptz` | nullable |
+| `trial_ends_at` | `timestamptz` | nullable |
 | `created_by` | `uuid` | references `profiles(id)` |
 | `created_at` | `timestamptz` | not null default `now()` |
 | `updated_at` | `timestamptz` | not null default `now()` |
@@ -83,6 +150,56 @@ Indexes:
 - `clubs_status_idx`.
 
 Tenant scoped: tenant root, no parent `club_id`.
+
+### `club_plan_history`
+
+Manual plan/trial changes by super admins.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | `uuid` | PK default `gen_random_uuid()` |
+| `club_id` | `uuid` | not null references `clubs(id)` |
+| `from_platform_plan_id` | `uuid` | nullable references `platform_plans(id)` |
+| `to_platform_plan_id` | `uuid` | not null references `platform_plans(id)` |
+| `from_trial_ends_at` | `timestamptz` | nullable |
+| `to_trial_ends_at` | `timestamptz` | nullable |
+| `changed_by` | `uuid` | not null references `profiles(id)` |
+| `reason` | `text` | not null |
+| `created_at` | `timestamptz` | not null default `now()` |
+
+Rules:
+- Only super admins can change plan or trial values.
+- Owners can read their club plan, trial status, usage, and history summary, but cannot change any of it.
+- During trial, the club has the entitlements of the assigned plan; metering continues but no billing happens.
+- Trial expiry enforcement is a future design decision; Phase 1B only stores fields and policy boundaries.
+
+Tenant scoped: yes.
+
+### `usage_snapshots`
+
+Daily append-only usage snapshots for future billing and owner usage displays.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | `uuid` | PK default `gen_random_uuid()` |
+| `club_id` | `uuid` | not null references `clubs(id)` |
+| `snapshot_date` | `date` | not null |
+| `active_member_count` | `integer` | not null check `>= 0` |
+| `staff_count` | `integer` | not null check `>= 0` |
+| `created_by` | `uuid` | nullable references `profiles(id)` |
+| `created_at` | `timestamptz` | not null default `now()` |
+
+Constraints:
+- unique `(club_id, snapshot_date)`.
+- append-only; only the scheduled job and super admins can write.
+
+Definition:
+- Platform billing/metering "active member" means `club_members.status = 'active'` and at least one subscription valid on `snapshot_date`.
+- A person in several clubs counts once per club.
+- A member with active club membership but expired subscription is not counted for platform metering, even though the club may still read member-owned data under the member-owned data rule.
+- Snapshot job is idempotent and runs once per day; reruns for the same `(club_id, snapshot_date)` update nothing or no-op through conflict handling.
+
+Tenant scoped: yes.
 
 ### `club_settings`
 
@@ -96,7 +213,12 @@ One row per club.
 | `logo_path` | `text` | nullable |
 | `accent_color` | `text` | nullable, hex color check |
 | `member_photo_required` | `boolean` | not null default false |
+| `require_member_phone` | `boolean` | not null default true |
 | `gym_module_enabled` | `boolean` | not null default true |
+| `nutrition_module_enabled` | `boolean` | not null default false |
+| `notifications_module_enabled` | `boolean` | not null default false |
+| `csv_import_enabled` | `boolean` | not null default false |
+| `attendance_scanner_enabled` | `boolean` | not null default true |
 | `transfer_instructions_ar` | `text` | nullable |
 | `transfer_instructions_en` | `text` | nullable |
 | `created_at` | `timestamptz` | not null default `now()` |
@@ -104,14 +226,16 @@ One row per club.
 
 Tenant scoped: yes, `club_id`.
 
+Module enablement must be checked against `club_entitlement(club_id, key)` in the protected update function, not only in the UI.
+
 ### `roles`
 
-Club role definitions plus the platform role marker.
+Club role definitions and role templates.
 
 | Column | Type | Constraints |
 |---|---|---|
 | `id` | `uuid` | PK default `gen_random_uuid()` |
-| `club_id` | `uuid` | nullable references `clubs(id)` on delete cascade |
+| `club_id` | `uuid` | not null references `clubs(id)` on delete cascade |
 | `key` | `text` | not null |
 | `name_ar` | `text` | not null |
 | `name_en` | `text` | not null |
@@ -120,9 +244,10 @@ Club role definitions plus the platform role marker.
 
 Constraints:
 - unique `(club_id, key)`.
-- `club_id is null` only for platform/global role definitions.
+- role template keys include `owner`, `member`, `trainer`, `reception`, `accountant`, and `manager`.
+- custom permission tweaks create or update club-scoped roles; no platform/global role rows are needed.
 
-Tenant scoped: mixed. Club roles have `club_id`; global platform roles have `club_id null`.
+Tenant scoped: yes.
 
 ### `permissions`
 
@@ -162,21 +287,30 @@ Membership/relationship between a profile and a club.
 | `club_id` | `uuid` | not null references `clubs(id)` on delete restrict |
 | `profile_id` | `uuid` | not null references `profiles(id)` on delete cascade |
 | `member_number` | `text` | not null |
+| `phone_e164` | `text` | nullable, normalized E.164, validated on input |
 | `role_id` | `uuid` | not null references `roles(id)` |
 | `status` | `member_status` | not null default `active` |
 | `staff_status` | `staff_status` | nullable |
+| `temp_password_required` | `boolean` | not null default false |
+| `temp_password_issued_at` | `timestamptz` | nullable |
+| `temp_password_expires_at` | `timestamptz` | nullable |
+| `sessions_revoked_at` | `timestamptz` | nullable |
 | `joined_at` | `timestamptz` | not null default `now()` |
-| `ended_at` | `timestamptz` | nullable |
+| `left_at` | `timestamptz` | nullable |
 | `deactivated_at` | `timestamptz` | nullable |
 | `created_by` | `uuid` | nullable references `profiles(id)` |
 | `created_at` | `timestamptz` | not null default `now()` |
 | `updated_at` | `timestamptz` | not null default `now()` |
 
 Constraints:
-- unique `(club_id, profile_id)` where `ended_at is null`.
+- unique `(club_id, profile_id)` where `left_at is null`.
 - unique `(club_id, member_number)`.
+- unique `(club_id, phone_e164)` where `phone_e164 is not null`; there is no platform-wide phone uniqueness.
 - role must belong to same `club_id` or be an allowed system member role.
 - a user cannot update their own `role_id`.
+- staff cannot edit their own role or permissions.
+- a non-owner staff member cannot edit an owner.
+- a creator can grant only permissions they already hold.
 
 Indexes:
 - `(profile_id, status)`.
@@ -185,9 +319,9 @@ Indexes:
 
 Tenant scoped: yes.
 
-### `staff_invitations`
+### `staff_link_requests`
 
-Single-use staff invitations.
+Pending link requests when a staff account email already belongs to an existing profile. There are no email invitations.
 
 | Column | Type | Constraints |
 |---|---|---|
@@ -195,15 +329,27 @@ Single-use staff invitations.
 | `club_id` | `uuid` | not null references `clubs(id)` |
 | `email` | `citext` | not null |
 | `role_id` | `uuid` | not null references `roles(id)` |
-| `token_hash` | `text` | not null unique |
-| `invited_by` | `uuid` | not null references `profiles(id)` |
-| `accepted_by` | `uuid` | nullable references `profiles(id)` |
+| `permission_overrides` | `jsonb` | not null default `{}` |
+| `requested_by` | `uuid` | not null references `profiles(id)` |
+| `target_profile_id` | `uuid` | nullable references `profiles(id)` |
 | `expires_at` | `timestamptz` | not null |
 | `accepted_at` | `timestamptz` | nullable |
-| `revoked_at` | `timestamptz` | nullable |
+| `declined_at` | `timestamptz` | nullable |
+| `cancelled_at` | `timestamptz` | nullable |
 | `created_at` | `timestamptz` | not null default `now()` |
 
 Tenant scoped: yes.
+
+Staff account creation rules:
+- Owner or a user with `staff.manage` enters full name, login email, role template, and optional permission tweaks.
+- The server uses a narrowly scoped service-role server function; permission is re-checked inside the function.
+- The function takes `club_id` from the authenticated active-club session, never from request body.
+- If the email is new, Supabase Auth creates the account with a random temporary password shown once to the creator.
+- Fake or placeholder email domains are not allowed.
+- First login with a temporary password is restricted to the change-password screen until changed.
+- If the email already exists, no account is created and no enumeration signal is leaked; a `staff_link_requests` row is created for in-app acceptance.
+- Reset, suspend, and remove staff revoke existing sessions, are audited, and are rate-limited.
+- Tests must cover temp-password lifecycle, forced change, enumeration resistance, privilege escalation, and session revocation.
 
 ### `membership_plans`
 
@@ -219,6 +365,8 @@ Club packages.
 | `duration_days` | `integer` | nullable, check `> 0` |
 | `price_minor` | `integer` | not null check `>= 0` |
 | `currency` | `char(3)` | not null default `EGP` |
+| `max_freeze_days` | `integer` | not null default 0, check `>= 0` |
+| `max_freeze_count` | `integer` | not null default 0, check `>= 0` |
 | `is_active` | `boolean` | not null default true |
 | `created_at` | `timestamptz` | not null default `now()` |
 | `updated_at` | `timestamptz` | not null default `now()` |
@@ -227,6 +375,12 @@ Constraints:
 - exactly one of `duration_months` or `duration_days` must be non-null.
 
 Tenant scoped: yes.
+
+Freeze policy:
+- Staff with `subscriptions.freeze` can freeze within the package limits.
+- Exceeding `max_freeze_days` or `max_freeze_count` requires owner permission, a mandatory reason, and an audit entry.
+- A freeze extends `subscriptions.ends_on` by the exact number of frozen Cairo calendar days.
+- Boundary tests must cover within limit, at limit, over limit with staff denial, over limit with owner approval, and leap/month-end edges.
 
 ### `subscriptions`
 
@@ -251,10 +405,35 @@ Member subscription periods.
 Constraints:
 - `ends_on >= starts_on`.
 - `daterange(starts_on, ends_on + 1, '[)')` exclusion preventing overlap per `club_member_id` for statuses `pending`, `active`, `frozen`.
+- end dates are computed as end-of-day in `Africa/Cairo` for display and validity checks; persisted columns remain `date` plus tested Cairo-boundary conversion.
 
 Indexes:
 - `(club_id, status, ends_on)`.
 - `(club_member_id, starts_on desc)`.
+
+Tenant scoped: yes.
+
+### `subscription_freezes`
+
+Freeze events for subscription history and limit tracking.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | `uuid` | PK default `gen_random_uuid()` |
+| `club_id` | `uuid` | not null references `clubs(id)` |
+| `subscription_id` | `uuid` | not null references `subscriptions(id)` |
+| `starts_on` | `date` | not null |
+| `ends_on` | `date` | not null |
+| `days_count` | `integer` | not null check `> 0` |
+| `exceeds_plan_limit` | `boolean` | not null default false |
+| `reason` | `text` | nullable; required when exceeding plan limit |
+| `approved_by` | `uuid` | nullable references `profiles(id)` |
+| `created_by` | `uuid` | not null references `profiles(id)` |
+| `created_at` | `timestamptz` | not null default `now()` |
+
+Constraints:
+- `ends_on >= starts_on`.
+- no overlapping freezes per subscription.
 
 Tenant scoped: yes.
 
@@ -280,6 +459,10 @@ Cash and proof-of-payment records.
 | `reviewed_at` | `timestamptz` | nullable |
 | `idempotency_key` | `uuid` | nullable |
 | `recorded_by` | `uuid` | nullable references `profiles(id)` |
+| `voided_by` | `uuid` | nullable references `profiles(id)` |
+| `voided_at` | `timestamptz` | nullable |
+| `void_reason` | `text` | nullable |
+| `refunded_by` | `uuid` | nullable references `profiles(id)` |
 | `created_at` | `timestamptz` | not null default `now()` |
 | `updated_at` | `timestamptz` | not null default `now()` |
 | `refunded_at` | `timestamptz` | nullable |
@@ -288,6 +471,9 @@ Constraints:
 - unique `(club_id, idempotency_key)` where `idempotency_key is not null`.
 - proof path required for transfer methods.
 - `reviewed_by/reviewed_at` required when approved or rejected.
+- cash payments are approved immediately when recorded by staff with `payments.record`.
+- `amount_minor`, `currency`, `method`, `club_member_id`, and `membership_plan_id` are immutable after insert.
+- corrections happen only through void/refund with mandatory reason by owner or accountant.
 
 Tenant scoped: yes.
 
@@ -501,7 +687,8 @@ Member-owned workout session log.
 | `performed_on` | `date` | not null |
 | `started_at` | `timestamptz` | nullable |
 | `finished_at` | `timestamptz` | nullable |
-| `created_by` | `uuid` | not null references `profiles(id)` |
+| `recorded_by` | `uuid` | not null references `profiles(id)` |
+| `source` | `record_source` | not null |
 | `client_mutation_id` | `uuid` | nullable |
 | `created_at` | `timestamptz` | not null default `now()` |
 | `updated_at` | `timestamptz` | not null default `now()` |
@@ -554,7 +741,8 @@ Member-owned body metrics.
 | `hip_cm` | `numeric(5,2)` | nullable |
 | `arm_cm` | `numeric(5,2)` | nullable |
 | `thigh_cm` | `numeric(5,2)` | nullable |
-| `created_by` | `uuid` | not null references `profiles(id)` |
+| `recorded_by` | `uuid` | not null references `profiles(id)` |
+| `source` | `record_source` | not null |
 | `client_mutation_id` | `uuid` | nullable |
 | `created_at` | `timestamptz` | not null default `now()` |
 
@@ -626,10 +814,16 @@ Append-only sensitive action log.
 | `created_at` | `timestamptz` | not null default `now()` |
 
 Constraints:
-- no updates or deletes by app roles.
+- UPDATE and DELETE are revoked from all app roles and also blocked by a `before update or delete` trigger that raises an exception.
 - metadata must be scrubbed: no payment proof URLs, no secrets, no raw health values unless required for audit.
 
 Tenant scoped: optional. Platform actions have `club_id null`; tenant actions set `club_id`.
+
+Audit readers:
+- super admins with MFA can read all audit rows.
+- owners can read audit rows for their own club.
+- staff with `audit.read` can read audit rows for their own club except platform-admin tenant-viewing entries.
+- ordinary members cannot read audit logs.
 
 ### `data_export_requests`
 
@@ -667,15 +861,21 @@ Tenant scoped: no.
 ```mermaid
 erDiagram
   profiles ||--o{ club_members : has
+  profiles ||--o{ platform_admins : administers
+  platform_plans ||--o{ platform_plan_prices : prices
+  platform_plans ||--o{ clubs : assigned
   clubs ||--|| club_settings : configures
+  clubs ||--o{ club_plan_history : changes
+  clubs ||--o{ usage_snapshots : meters
   clubs ||--o{ club_members : contains
   clubs ||--o{ roles : defines
   roles ||--o{ role_permissions : grants
   permissions ||--o{ role_permissions : included_in
   club_members }o--|| roles : assigned_role
-  clubs ||--o{ staff_invitations : sends
+  clubs ||--o{ staff_link_requests : requests
   clubs ||--o{ membership_plans : offers
   club_members ||--o{ subscriptions : has
+  subscriptions ||--o{ subscription_freezes : freezes
   membership_plans ||--o{ subscriptions : creates
   club_members ||--o{ payments : pays
   payments }o--o| subscriptions : activates
@@ -720,9 +920,12 @@ Initial registry:
 - `roles.manage`
 - `subscriptions.read`
 - `subscriptions.manage`
+- `subscriptions.freeze`
+- `subscriptions.freeze.override`
 - `payments.read`
 - `payments.record`
 - `payments.approve`
+- `payments.void`
 - `payments.refund`
 - `attendance.scan`
 - `attendance.read`
@@ -741,17 +944,19 @@ Initial registry:
 | `owner` | all club permissions except platform-only actions |
 | `trainer` | `members.read`, `plans.manage`, `plans.assign`, `progress.read`, `progress.write_for_member`, `nutrition.manage` |
 | `reception` | `members.read`, `attendance.scan`, `attendance.read`, `subscriptions.read`, `payments.read`, `payments.record` |
-| `accountant` | `members.read`, `subscriptions.read`, `payments.read`, `payments.record`, `payments.approve`, `payments.refund` |
+| `accountant` | `members.read`, `subscriptions.read`, `payments.read`, `payments.record`, `payments.approve`, `payments.void`, `payments.refund` |
+| `manager` | broad operational access: `members.*`, `subscriptions.*` except override unless granted, `payments.read`, `payments.record`, `attendance.*`, `plans.assign`, `progress.read` |
 | `member` | self-service only through specific RLS policies, not broad club permissions |
-| `super_admin` | platform access through `profiles.is_platform_admin = true`, audited for tenant viewing |
+| `super_admin` | platform access through `platform_admins` plus MFA, audited for tenant viewing |
 
 ### SQL helper functions
 
 - `current_profile_id() returns uuid`: wraps `auth.uid()`.
-- `is_super_admin() returns boolean`: true when current profile has `is_platform_admin`.
-- `is_active_club_member(club_id uuid) returns boolean`: active non-ended club membership.
+- `is_super_admin() returns boolean`: true when current profile has an active `platform_admins` row and the current session has MFA verified.
+- `is_active_club_member(club_id uuid) returns boolean`: membership row where `club_members.status = 'active'`.
 - `has_permission(club_id uuid, permission_key text) returns boolean`: active membership with a role granting permission.
 - `can_read_member_owned_data(club_id uuid, member_profile_id uuid) returns boolean`: true when requester owns the data, is super admin, or has active membership in the same club and the target member currently has active membership in the same club with the correct permission.
+- `club_entitlement(club_id uuid, key text) returns jsonb`: returns a typed JSON object with `allowed boolean`, `limit integer|null`, `current integer|null`, `source text`, and `reason text|null`. It is the single contract used by DB functions and server code for staff limits, member limits, and module availability.
 
 All security-definer helpers must:
 - set `search_path = public, pg_temp`.
@@ -759,23 +964,49 @@ All security-definer helpers must:
 - be granted only to `authenticated` when needed.
 - revoke from `public`.
 
+Entitlement enforcement:
+- staff creation, member creation/import, and module enablement must call protected DB functions that check `club_entitlement`.
+- functions must lock the club row or use a transaction-scoped advisory lock before counting current staff/members to prevent race conditions.
+- tests must include two concurrent staff creations at the limit.
+- downgrade never deletes data or disables existing accounts; it blocks only new additions above the limit.
+- disabled modules become read-only for existing data, not hidden.
+- owner usage counters must use the same query/function source as enforcement.
+
+Future billing note:
+- billing is out of scope: no invoices, no platform payments, no enforcement by non-payment.
+- future monthly amount would use daily `usage_snapshots`, the effective `platform_plan_prices` row for the period, and `min_monthly_fee_minor`.
+- intended non-payment behavior is a grace period, then blocking new additions or read-only mode; data is never deleted.
+
 ## RLS Policy Plan
 
 Default: enable RLS on every table; no public access. Service role is used only in trusted server paths that truly need it.
 
+Default privileges:
+- Migration 1B must run `revoke all on all tables in schema public from anon, authenticated`.
+- Revoke all on all sequences and functions from `anon` and `authenticated`.
+- Alter default privileges so future tables, sequences, and functions grant nothing implicitly.
+- Grant explicit table/function privileges only after RLS policies and security-definer checks exist.
+- pgTAP must prove unexpected direct access is denied.
+
 | Table | Select | Insert | Update | Delete |
 |---|---|---|---|---|
 | `profiles` | self; same-club staff with `members.read`; super admin | profile trigger only; self sign-up path | self limited fields; staff cannot change profile identity; super admin audited | account deletion function only |
+| `platform_admins` | super admins with MFA | migrations/protected function only | migrations/protected function only | migrations/protected function only |
+| `platform_plans` | owners can read assigned plan; super admins read all | migrations/super admin only | super admin only | no direct delete |
+| `platform_plan_prices` | owners can read prices for their assigned plan; super admins read all | super admin only | no updates; insert new version | no direct delete |
 | `clubs` | active members of club; super admin | super admin only | super admin; owner for non-status fields through settings only | no direct delete |
+| `club_plan_history` | owners read own club; super admins read all | protected super-admin function only | none | none |
+| `usage_snapshots` | owners read own club; super admins read all | scheduled job or super admin only | none except idempotent job conflict path | none |
 | `club_settings` | active members of club | super admin/club creation function | owner/staff with `club.settings`; super admin | no direct delete |
 | `roles` | owner/staff in club; super admin | owner with `roles.manage`; seed/function for system roles | owner with `roles.manage`; cannot edit system role keys | owner with `roles.manage` if unused and non-system |
 | `permissions` | authenticated | migrations only | migrations only | migrations only |
 | `role_permissions` | owner/staff in club; super admin | owner with `roles.manage` | owner with `roles.manage` | owner with `roles.manage` |
 | `club_members` | self rows; same-club staff with `members.read`; super admin | staff with `members.write`; invite accept function | staff with `members.write`; `staff.manage` for staff; never self-role update | no direct delete; status update only |
-| `staff_invitations` | owner/staff with `staff.manage`; invited email through token function | owner/staff with `staff.manage` | inviter can revoke; accept function can mark accepted | no direct delete |
+| `staff_link_requests` | requester, target existing user, owner/staff with `staff.manage`, super admin | protected staff function only | target can accept/decline; requester can cancel | no direct delete |
 | `membership_plans` | active members of club | `subscriptions.manage` | `subscriptions.manage` | soft deactivate only |
 | `subscriptions` | member self; staff with `subscriptions.read`; super admin | `subscriptions.manage` or payment approval function | `subscriptions.manage` | no direct delete |
-| `payments` | member self; staff with `payments.read`; super admin | member pending transfer for self; staff with `payments.record` | approval/refund functions only | no direct delete |
+| `subscription_freezes` | member self; staff with `subscriptions.read`; super admin | protected freeze function only | none; corrections through audited function | no direct delete |
+| `payments` | member self; staff with `payments.read`; super admin | member pending transfer for self; staff with `payments.record` | approval/void/refund functions only | no direct delete |
 | `attendance` | member self; staff with `attendance.read`; super admin | scan/verify function only | no direct update except audit correction function | no direct delete |
 | `exercises` | active members of club | `plans.manage` | `plans.manage` | soft deactivate |
 | `training_plans` | assigned member if assigned; staff with `plans.manage`; trainer with relevant access | `plans.manage` | `plans.manage` | no direct delete if assigned |
@@ -801,13 +1032,16 @@ Workout logs and body measurements:
 
 - Always store `profile_id`, `club_id`, and `club_member_id`.
 - Member can read all their own records, even after membership ends.
+- "Active membership" means `club_members.status = 'active'`; it does not require a valid subscription.
+- RLS tests must prove that an expired subscription with active membership still allows club access, while `left` or `suspended` membership closes club access.
 - Club staff can read only records where:
   - staff has active membership in that `club_id`,
   - staff has `progress.read`,
   - target member has active membership in that same club at read time,
   - record `club_id` equals active club.
 - When membership ends, staff visibility closes immediately; the member keeps the history.
-- Staff-written records set `created_by` to the staff profile and still keep `profile_id` as the member.
+- Staff-written records set `recorded_by` to the staff profile, `source = 'staff'`, and still keep `profile_id` as the member.
+- Member-written records set `recorded_by = profile_id` and `source = 'member'`.
 - Offline sync uses `client_mutation_id` idempotency.
 
 ## Subscription State Machine
@@ -847,21 +1081,29 @@ Edge cases to test:
 
 ## Payment Approval Function
 
-Function name: `approve_payment(payment_id uuid, reviewer_profile_id uuid, idempotency_key uuid) returns uuid`.
+Function names:
+- `record_cash_payment(...) returns uuid`: staff with `payments.record` records cash and immediately creates/extends the subscription in the same transaction.
+- `approve_transfer_payment(payment_id uuid, reviewer_profile_id uuid, idempotency_key uuid) returns uuid`: owner/accountant/staff with `payments.approve` approves proof-based transfers.
+- `void_or_refund_payment(payment_id uuid, reason text, mode text)`: owner or accountant only; mandatory reason; audited.
 
 Transaction flow:
-1. Validate caller is authenticated and has `payments.approve` for `payments.club_id`.
+1. Validate caller is authenticated and has the required permission for the payment method.
 2. Lock payment row `for update`.
 3. If payment is already `approved`, return existing `subscription_id`.
 4. Reject if payment is `rejected` or `refunded`.
 5. Lock member row and plan row.
 6. Compute subscription dates using the single date function and latest active/future subscription.
 7. Insert subscription or attach to existing idempotent result.
-8. Update payment to `approved`, set `reviewed_by`, `reviewed_at`, `subscription_id`, `idempotency_key`.
+8. Update payment to `approved`, set `reviewed_by`, `reviewed_at`, `subscription_id`, `idempotency_key`; cash sets these immediately at record time.
 9. Insert audit log.
 10. Return subscription id.
 
 This prevents double clicks and retries from creating duplicate subscriptions.
+
+Cash reconciliation:
+- daily cash summary is computed only from approved non-voided cash payments.
+- cash amounts are immutable after recording.
+- corrections use void/refund rows/state with mandatory reason; the original payment remains for audit.
 
 ## QR Token and Attendance Dedupe
 
@@ -878,7 +1120,7 @@ Verification:
 - Response includes only reception fields: name, avatar signed URL, member number, plan/subscription state.
 
 Dedupe:
-- `qr_jti` unique per club prevents replay.
+- `qr_jti` unique per club prevents replay in the database. In-memory replay state is forbidden because the app runs on serverless.
 - `dedupe_key = club_member_id + floor(occurred_at / 90 seconds)` prevents repeated accepted records from the same scan window.
 - Duplicate attempts are recorded as `duplicate` or safely return the existing accepted attendance depending on UX.
 
@@ -905,7 +1147,7 @@ Upload rules:
 
 Audit these actions:
 - club create/edit/suspend/archive.
-- owner assignment and staff invitation acceptance/revocation.
+- owner assignment and staff account/link-request acceptance/revocation.
 - role and permission changes.
 - member creation/import/deactivation.
 - subscription create/freeze/cancel/renew.
@@ -935,11 +1177,47 @@ Deletion:
 - User requests deletion.
 - If export not completed, offer export first.
 - After grace period, hard delete `auth.users` and cascading `profiles` where legally allowed.
-- Business records that must remain for club accounting are anonymized:
-  - payments keep amount/date/status but remove proof path and direct personal identifiers where feasible.
-  - audit logs keep actor id nullable/anonymized.
+- Business records that must remain for club accounting are retained but anonymized.
+- Erased:
+  - `profiles.email`, `profiles.phone_e164`, names, avatar path, locale preferences tied only to the person.
+  - member photos and payment proof files from storage.
+  - member-owned health/progress data: `workout_logs`, `workout_log_sets`, `body_measurements`.
+  - push subscriptions and notifications for the deleted profile.
+- Anonymized:
+  - `club_members.profile_id` is replaced with a deleted-profile tombstone where retention is required, and display fields become "Deleted member".
+  - `payments.club_member_id` may remain for accounting continuity, but payment proof path, reference, and personal metadata are cleared or replaced with `[deleted]`.
+  - `audit_log.actor_profile_id` is set to null or a deleted-profile tombstone; metadata personal fields are scrubbed.
+- Retained:
+  - payment amount, currency, method, status, created/reviewed/refunded timestamps, and accounting reason fields.
+  - subscription date ranges and club-level financial history.
+  - append-only audit rows after scrubbing.
 - Member-owned health data is hard deleted.
 - Completion is audited without sensitive payload.
+
+## Realtime
+
+Realtime is disabled for now. No tables are added to Supabase Realtime publications in Phase 1B. If later enabled, the design must list exact tables and payload fields before implementation.
+
+## Platform Plan Downgrade Behavior
+
+Downgrades never delete data and never disable existing accounts.
+
+| Entitlement/module | When downgraded below current usage or disabled |
+|---|---|
+| `max_staff` | Existing staff keep access. New staff creation and staff link acceptance are blocked until usage is below limit or plan changes. |
+| `max_members` | Existing members remain. New member creation/import rows above limit are blocked; CSV import must fail only rows that exceed the limit and report them. |
+| `nutrition` | Existing nutrition plans and assignments are read-only. Creating/editing/assigning nutrition plans is blocked. |
+| `notifications` | Existing notifications remain readable. New automated notifications and new push subscription prompts are blocked. |
+| `csv_import` | Manual member management remains available subject to `max_members`; CSV import is blocked. |
+| `attendance_scanner` | Existing attendance records remain readable. QR/manual scan creation is blocked; member card display remains unaffected. |
+
+Role templates and platform plans are both checked: the role controls what a staff user can do, while the platform plan controls what the club is entitled to use or add.
+
+## Auth Email and SMTP
+
+Supabase's default email sender is not production-grade and should be used only for development/testing. Password reset and member verification still send email.
+
+Proposed free custom SMTP option before production: Brevo SMTP. As of the current official Brevo help/pricing pages, the free plan includes 300 email sends per day, and Supabase documents custom SMTP for Auth while noting its default SMTP is best-effort/non-production. Do not add Brevo or any SMTP service until the project owner explicitly approves the service, sender domain, DNS setup, and limits.
 
 ## Threat Model
 
@@ -953,7 +1231,7 @@ Deletion:
 | Former club reads member workout history | `can_read_member_owned_data` requires current active membership |
 | Double-click payment approval creates duplicate subscription | transactional function, row locks, idempotency key |
 | Overlapping subscriptions | exclusion constraint on subscription date ranges |
-| QR replay | unique `qr_jti`, short expiry, dedupe window |
+| QR replay | database unique `qr_jti`, short expiry, dedupe window |
 | QR used by wrong club staff | verify staff club and `attendance.scan` against token `club_id` |
 | Payment proof path guessing | private buckets, signed URLs, path policies |
 | Malicious upload filename/path traversal | server-generated paths, MIME/size validation |
@@ -974,10 +1252,12 @@ Deletion:
 - Keep policy names explicit: `{table}_{operation}_{role_or_rule}`.
 - Add `updated_at` trigger helper once and reuse.
 - Add helper assertions in DB tests for cross-club deny cases.
+- Add pgTAP tests for platform plans: owner cannot change plan/prices/trial; staff cannot read other clubs' plans or snapshots; limits at `limit-1`, `limit`, and `limit+1`; downgrade below current usage; concurrent creation at limit; snapshot idempotency; member-count boundary dates; and price versioning preserving old periods.
+- Add pgTAP tests for temporary staff password lifecycle, forced password change, enumeration-resistant existing-email flow, privilege-escalation attempts, and session revocation markers.
+- Add tests proving every view is `security_invoker = true` and no default privileges leak to `anon` or `authenticated`.
 
 ## Open Questions
 
-1. Should phone numbers be mandatory for members, or optional with email-only accounts allowed?
-2. Should staff invitations support phone/WhatsApp later, or email only for now?
-3. What is the preferred freeze policy: unlimited freezes by staff, or package-configured max freeze days?
-4. Should cash payment approval be immediate when recorded by authorized staff, or should cash also have a review step?
+1. Approve or reject Brevo SMTP as the production custom SMTP provider before any service is added.
+2. Confirm temporary password expiry duration for staff account creation. Proposal: 24 hours.
+3. Confirm freeze override reason visibility: owner/accountant only, or visible to the member as well?
