@@ -43,6 +43,8 @@ npm run secret-scan
 
 `npm run test:db` needs Docker and uses the local Supabase CLI package.
 
+Because some development machines may not have enough disk space for Docker Desktop, the GitHub Actions workflow `Database Tests` is the reference environment for database migrations and pgTAP tests. Contributors who have Docker locally should keep using `npm run test:db` before pushing; otherwise, push the phase branch and review the CI artifact `supabase-db-test-output`.
+
 ## Phase 0 Scope
 
 - Next.js App Router, TypeScript strict, ESLint, Prettier, Vitest, Playwright and CI.

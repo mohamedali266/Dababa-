@@ -1,0 +1,76 @@
+name: Database Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  db-tests:
+    name: Supabase DB tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v3
+
+      - name: Prepare logs directory
+        run: mkdir -p logs
+
+      - name: Start Supabase stack
+        run: |
+          set -o pipefail
+          supabase start 2>&1 | tee logs/supabase-start.log
+
+      - name: Reset database
+        run: |
+          set -o pipefail
+          supabase db reset 2>&1 | tee logs/supabase-db-reset.log
+
+      - name: Run pgTAP database tests
+        run: |
+          set -o pipefail
+          supabase test db 2>&1 | tee logs/supabase-test-db.log
+
+      - name: Print pgTAP summary
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          log_path = Path("logs/supabase-test-db.log")
+          text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+          plan_total = 0
+          passed = 0
+          failed = 0
+
+          for line in text.splitlines():
+              stripped = line.strip()
+              if re.match(r"^1\.\.\d+$", stripped):
+                  plan_total = max(plan_total, int(stripped.split("..", 1)[1]))
+              if re.match(r"^ok\b", stripped):
+                  passed += 1
+              if re.match(r"^not ok\b", stripped):
+                  failed += 1
+
+          if not text:
+              print("pgTAP summary: no supabase test db output was produced.")
+          else:
+              print(f"pgTAP summary: tests={plan_total or passed + failed}, passed={passed}, failed={failed}")
+          PY
+
+      - name: Upload Supabase DB test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supabase-db-test-output
+          path: logs/
+          if-no-files-found: error
+
+      - name: Stop Supabase stack
+        if: always()
+        run: supabase stop --no-backup
