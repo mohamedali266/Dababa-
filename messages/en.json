@@ -1,0 +1,54 @@
+{
+  "meta": {
+    "title": "Dababa",
+    "description": "Gym management and membership app foundation"
+  },
+  "home": {
+    "eyebrow": "Phase 0",
+    "title": "Dababa is ready to build",
+    "body": "A clean, secure foundation for a multi-club gym PWA with two locales, themes, motion, and an initial interface kit.",
+    "primaryAction": "Open system preview",
+    "secondaryAction": "Switch language",
+    "statMembers": "Demo member",
+    "statClubs": "Demo club",
+    "statUptime": "Interface readiness"
+  },
+  "nav": {
+    "designSystem": "Design preview",
+    "home": "Home"
+  },
+  "common": {
+    "language": "Language",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System",
+    "open": "Open",
+    "close": "Close",
+    "loading": "Loading data",
+    "emptyTitle": "No data yet",
+    "emptyBody": "Real data appears here once the next phases start.",
+    "save": "Save",
+    "cancel": "Cancel"
+  },
+  "design": {
+    "title": "Dababa System Preview",
+    "body": "Each primitive is shaped around Dababa colors and product character so we can review the identity early.",
+    "buttons": "Buttons",
+    "forms": "Fields",
+    "feedback": "States",
+    "tabs": "Tabs",
+    "dialogTitle": "Review dialog",
+    "dialogBody": "A compact dialog for testing shape, focus, and direction.",
+    "toast": "Foundation prepared",
+    "memberName": "Captain Mohamed Abdelrahman Altawil",
+    "sampleLabel": "Member name",
+    "selectPlaceholder": "Choose package",
+    "optionMonthly": "Monthly",
+    "optionQuarter": "3 months"
+  },
+  "offline": {
+    "title": "You are offline",
+    "body": "The app shell is available, but live data and QR codes need a connection."
+  }
+}
