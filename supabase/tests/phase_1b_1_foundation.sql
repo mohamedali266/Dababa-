@@ -7,32 +7,92 @@ select has_extension('btree_gist');
 select has_extension('pg_trgm');
 select has_extension('citext');
 
-select has_enum('public', 'club_status');
-select has_enum('public', 'member_status');
-select has_enum('public', 'staff_status');
-select has_enum('public', 'record_source');
+select ok(to_regtype('public.club_status') is not null, 'club_status enum exists');
+select ok(to_regtype('public.member_status') is not null, 'member_status enum exists');
+select ok(to_regtype('public.staff_status') is not null, 'staff_status enum exists');
+select ok(to_regtype('public.record_source') is not null, 'record_source enum exists');
 
-select has_table('public', 'profiles');
-select has_table('public', 'platform_admins');
-select has_table('public', 'platform_plans');
-select has_table('public', 'platform_plan_prices');
-select has_table('public', 'clubs');
-select has_table('public', 'club_plan_history');
-select has_table('public', 'usage_snapshots');
-select has_table('public', 'club_settings');
-select has_table('public', 'roles');
-select has_table('public', 'permissions');
-select has_table('public', 'role_permissions');
-select has_table('public', 'club_members');
-select has_table('public', 'staff_link_requests');
+select ok(to_regclass('public.profiles') is not null, 'profiles table exists');
+select ok(to_regclass('public.platform_admins') is not null, 'platform_admins table exists');
+select ok(to_regclass('public.platform_plans') is not null, 'platform_plans table exists');
+select ok(to_regclass('public.platform_plan_prices') is not null, 'platform_plan_prices table exists');
+select ok(to_regclass('public.clubs') is not null, 'clubs table exists');
+select ok(to_regclass('public.club_plan_history') is not null, 'club_plan_history table exists');
+select ok(to_regclass('public.usage_snapshots') is not null, 'usage_snapshots table exists');
+select ok(to_regclass('public.club_settings') is not null, 'club_settings table exists');
+select ok(to_regclass('public.roles') is not null, 'roles table exists');
+select ok(to_regclass('public.permissions') is not null, 'permissions table exists');
+select ok(to_regclass('public.role_permissions') is not null, 'role_permissions table exists');
+select ok(to_regclass('public.club_members') is not null, 'club_members table exists');
+select ok(to_regclass('public.staff_link_requests') is not null, 'staff_link_requests table exists');
 
-select has_column('public', 'profiles', 'must_change_password');
-select has_column('public', 'club_settings', 'require_member_phone');
-select has_column('public', 'club_members', 'phone_e164');
-select has_column('public', 'club_members', 'temp_password_expires_at');
+select ok(
+  exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'profiles'
+      and column_name = 'must_change_password'
+  ),
+  'profiles.must_change_password column exists'
+);
 
-select col_default_is('public', 'profiles', 'must_change_password', 'false');
-select col_default_is('public', 'club_settings', 'require_member_phone', 'true');
+select ok(
+  exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'club_settings'
+      and column_name = 'require_member_phone'
+  ),
+  'club_settings.require_member_phone column exists'
+);
+
+select ok(
+  exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'club_members'
+      and column_name = 'phone_e164'
+  ),
+  'club_members.phone_e164 column exists'
+);
+
+select ok(
+  exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'club_members'
+      and column_name = 'temp_password_expires_at'
+  ),
+  'club_members.temp_password_expires_at column exists'
+);
+
+select is(
+  (
+    select column_default
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'profiles'
+      and column_name = 'must_change_password'
+  ),
+  'false',
+  'profiles.must_change_password defaults false'
+);
+
+select is(
+  (
+    select column_default
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'club_settings'
+      and column_name = 'require_member_phone'
+  ),
+  'true',
+  'club_settings.require_member_phone defaults true'
+);
 
 select ok(
   (

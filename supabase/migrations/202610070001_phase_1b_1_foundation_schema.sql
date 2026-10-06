@@ -6,6 +6,7 @@ create extension if not exists citext with schema extensions;
 revoke all on all tables in schema public from anon, authenticated;
 revoke all on all sequences in schema public from anon, authenticated;
 revoke all on all functions in schema public from anon, authenticated;
+revoke all on all functions in schema public from public;
 
 do $$
 declare
@@ -31,12 +32,17 @@ begin
         'alter default privileges for role %I in schema public revoke all on functions from anon, authenticated',
         creator_role
       );
+      execute format(
+        'alter default privileges for role %I in schema public revoke all on functions from public',
+        creator_role
+      );
     end if;
   end loop;
 
   execute 'alter default privileges in schema public revoke all on tables from anon, authenticated';
   execute 'alter default privileges in schema public revoke all on sequences from anon, authenticated';
   execute 'alter default privileges in schema public revoke all on functions from anon, authenticated';
+  execute 'alter default privileges in schema public revoke all on functions from public';
 end $$;
 
 create type public.club_status as enum ('active', 'suspended', 'archived');
