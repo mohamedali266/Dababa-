@@ -13,7 +13,12 @@ declare
 begin
   foreach creator_role in array array['postgres', 'supabase_admin']
   loop
-    if exists (select 1 from pg_roles where rolname = creator_role) then
+    if exists (select 1 from pg_roles where rolname = creator_role)
+      and (
+        creator_role = current_user
+        or pg_has_role(current_user, creator_role, 'member')
+      )
+    then
       execute format(
         'alter default privileges for role %I in schema public revoke all on tables from anon, authenticated',
         creator_role
@@ -28,6 +33,10 @@ begin
       );
     end if;
   end loop;
+
+  execute 'alter default privileges in schema public revoke all on tables from anon, authenticated';
+  execute 'alter default privileges in schema public revoke all on sequences from anon, authenticated';
+  execute 'alter default privileges in schema public revoke all on functions from anon, authenticated';
 end $$;
 
 create type public.club_status as enum ('active', 'suspended', 'archived');

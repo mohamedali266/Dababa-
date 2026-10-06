@@ -1032,6 +1032,7 @@ Default privileges:
   - `alter default privileges for role <creator_role> in schema public revoke all on tables from anon, authenticated;`
   - `alter default privileges for role <creator_role> in schema public revoke all on sequences from anon, authenticated;`
   - `alter default privileges for role <creator_role> in schema public revoke all on functions from anon, authenticated;`
+- PostgreSQL permits changing default privileges only for the current role or roles it is a member of. A migration must therefore apply these statements to `current_user` and to any listed creator role where `pg_has_role(current_user, creator_role, 'member')` is true; roles outside that set need an explicit maintenance migration run by that role.
 - Grant explicit table/function privileges only after RLS policies and security-definer checks exist.
 - pgTAP must create a throwaway table, sequence, and function as the migration owner and prove `anon` and `authenticated` cannot access them by default.
 
