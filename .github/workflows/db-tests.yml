@@ -63,6 +63,20 @@ jobs:
               if re.match(r"^not ok\b", stripped):
                   failed += 1
 
+              tests_match = re.search(r"Tests=(\d+)", stripped)
+              if tests_match:
+                  plan_total = max(plan_total, int(tests_match.group(1)))
+
+              failed_match = re.search(r"Failed(?:\:|\s)(\d+)", stripped)
+              if failed_match:
+                  failed = max(failed, int(failed_match.group(1)))
+
+          if "Result: PASS" in text and plan_total:
+              failed = 0
+              passed = plan_total
+          elif plan_total:
+              passed = max(plan_total - failed, 0)
+
           if not text:
               print("pgTAP summary: no supabase test db output was produced.")
           else:
@@ -70,7 +84,7 @@ jobs:
           PY
 
       - name: Print diagnostic log tails
-        if: always()
+        if: failure()
         run: |
           python3 - <<'PY'
           from pathlib import Path
