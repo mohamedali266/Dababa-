@@ -32,6 +32,19 @@ Stack is fixed. Do not substitute anything without asking.
 7. Check current official documentation for the installed version of every framework before using its API (Next.js, Supabase, next-intl, Serwist, Motion). Do not rely on memory for APIs that change between versions.
 8. Never add a dependency without stating: purpose, license (must be permissive and free: MIT, Apache-2.0, BSD, ISC), maintenance status, bundle impact. No paid services without asking me first.
 
+## 2a. Free-only services policy
+
+- Every service, library, and tool must be free for development and the early pilot, with no credit card required.
+- Open-source libraries must use a permissive license such as MIT, Apache-2.0, BSD, or ISC.
+- Before using any external service, the phase report must state:
+  - the free-tier limits, verified from the provider's official docs, with link and check date;
+  - what happens when each relevant limit is exceeded;
+  - whether the provider's terms allow Dababa's intended use, including later commercial use;
+  - any known conflict between the free tier and production use, such as commercial hosting restrictions, database pausing, backup limits, email daily limits, account inactivity deletion, or branding.
+- Never rely on memory for pricing, quotas, or limits. Re-check official docs during the phase where the service is proposed or used.
+- Every external service must sit behind an adapter/interface configured by environment variables so the provider can be replaced without touching business logic. This applies at minimum to email/SMTP, rate limiting, push notifications, and any future replacement for storage.
+- Do not add or configure an external service until the project owner explicitly approves that service and the documented limits.
+
 ## 3. Tech stack (fixed)
 
 | Area | Choice |
