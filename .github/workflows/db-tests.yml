@@ -70,6 +70,31 @@ jobs:
       - name: Print diagnostic log tails
         if: always()
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def escape_annotation(value: str) -> str:
+              return (
+                  value.replace("%", "%25")
+                  .replace("\r", "%0D")
+                  .replace("\n", "%0A")
+                  .replace(":", "%3A")
+                  .replace(",", "%2C")
+              )
+
+          for file_name in (
+              "logs/supabase-start.log",
+              "logs/supabase-db-reset.log",
+              "logs/supabase-test-db.log",
+          ):
+              path = Path(file_name)
+              if not path.exists():
+                  continue
+              tail = "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:])
+              if tail:
+                  print(f"::error title={escape_annotation(file_name)} tail::{escape_annotation(tail)}")
+          PY
+
           {
             echo "## Supabase DB test diagnostics"
             echo
