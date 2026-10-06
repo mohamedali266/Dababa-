@@ -9,6 +9,8 @@ jobs:
     name: Supabase DB tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SUPABASE_DISABLE_TELEMETRY: "1"
 
     steps:
       - name: Check out repository
@@ -16,6 +18,8 @@ jobs:
 
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@v3
+        with:
+          version: latest
 
       - name: Prepare logs directory
         run: mkdir -p logs
@@ -62,6 +66,25 @@ jobs:
           else:
               print(f"pgTAP summary: tests={plan_total or passed + failed}, passed={passed}, failed={failed}")
           PY
+
+      - name: Print diagnostic log tails
+        if: always()
+        run: |
+          {
+            echo "## Supabase DB test diagnostics"
+            echo
+            for file in logs/supabase-start.log logs/supabase-db-reset.log logs/supabase-test-db.log; do
+              echo "### ${file}"
+              if [ -f "${file}" ]; then
+                echo '```text'
+                tail -n 160 "${file}"
+                echo '```'
+              else
+                echo "No output file was produced."
+              fi
+              echo
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Supabase DB test output
         if: always()
