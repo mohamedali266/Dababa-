@@ -74,6 +74,8 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import os
+          import re
 
           def escape_annotation(value: str) -> str:
               return (
@@ -84,36 +86,56 @@ jobs:
                   .replace(",", "%2C")
               )
 
-          for file_name in (
+          def redact(value: str) -> str:
+              value = re.sub(r"sb_secret_[A-Za-z0-9_=.-]+", "[redacted-secret-key]", value)
+              value = re.sub(r"sb_publishable_[A-Za-z0-9_=.-]+", "[redacted-publishable-key]", value)
+              value = re.sub(r"(service_role key\s+)\S+", r"\1[redacted]", value, flags=re.IGNORECASE)
+              value = re.sub(r"(anon key\s+)\S+", r"\1[redacted]", value, flags=re.IGNORECASE)
+              return value
+
+          files = (
               "logs/supabase-start.log",
               "logs/supabase-db-reset.log",
               "logs/supabase-test-db.log",
-          ):
+          )
+
+          summary_parts = ["## Supabase DB test diagnostics", ""]
+
+          for file_name in files:
               path = Path(file_name)
+              summary_parts.append(f"### {file_name}")
               if not path.exists():
+                  summary_parts.append("No output file was produced.")
+                  summary_parts.append("")
                   continue
-              tail = "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:])
-              tail = re.sub(r"sb_secret_[A-Za-z0-9_=.-]+", "[redacted-secret-key]", tail)
-              tail = re.sub(r"sb_publishable_[A-Za-z0-9_=.-]+", "[redacted-publishable-key]", tail)
+              tail = redact("\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]))
               if tail:
                   print(f"::warning title={escape_annotation(file_name)} tail::{escape_annotation(tail)}")
+              summary_parts.extend(["```text", tail, "```", ""])
+
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              Path(summary_path).write_text("\n".join(summary_parts), encoding="utf-8")
           PY
 
-          {
-            echo "## Supabase DB test diagnostics"
-            echo
-            for file in logs/supabase-start.log logs/supabase-db-reset.log logs/supabase-test-db.log; do
-              echo "### ${file}"
-              if [ -f "${file}" ]; then
-                echo '```text'
-                tail -n 160 "${file}"
-                echo '```'
-              else
-                echo "No output file was produced."
-              fi
-              echo
-            done
-          } >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Redact logs before artifact upload
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def redact(value: str) -> str:
+              value = re.sub(r"sb_secret_[A-Za-z0-9_=.-]+", "[redacted-secret-key]", value)
+              value = re.sub(r"sb_publishable_[A-Za-z0-9_=.-]+", "[redacted-publishable-key]", value)
+              value = re.sub(r"(service_role key\s+)\S+", r"\1[redacted]", value, flags=re.IGNORECASE)
+              value = re.sub(r"(anon key\s+)\S+", r"\1[redacted]", value, flags=re.IGNORECASE)
+              return value
+
+          for path in Path("logs").glob("*.log"):
+              text = path.read_text(encoding="utf-8", errors="replace")
+              path.write_text(redact(text), encoding="utf-8")
+          PY
 
       - name: Upload Supabase DB test output
         if: always()
