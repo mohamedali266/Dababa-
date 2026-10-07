@@ -41,6 +41,11 @@ jobs:
           set -o pipefail
           supabase test db 2>&1 | tee logs/supabase-test-db.log
 
+      - name: Run staff-limit concurrency check
+        run: |
+          set -o pipefail
+          bash scripts/db-staff-limit-concurrency.sh 2>&1 | tee logs/staff-limit-concurrency.log
+
       - name: Print pgTAP summary
         if: always()
         run: |
@@ -111,6 +116,7 @@ jobs:
               "logs/supabase-start.log",
               "logs/supabase-db-reset.log",
               "logs/supabase-test-db.log",
+              "logs/staff-limit-concurrency.log",
           )
 
           summary_parts = ["## Supabase DB test diagnostics", ""]
